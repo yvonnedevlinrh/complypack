@@ -34,14 +34,21 @@ func NewRepository(ref string, credFunc auth.CredentialFunc, plainHTTP bool) (*r
 	}
 
 	repo.PlainHTTP = plainHTTP
+
+	// Always use custom HTTP client with timeout to prevent hanging on unresponsive registries
+	httpClient := &http.Client{
+		Timeout: 60 * time.Second,
+	}
+
 	if credFunc != nil {
-		// Use custom HTTP client with timeout to prevent hanging on unresponsive registries
-		httpClient := &http.Client{
-			Timeout: 60 * time.Second,
-		}
 		repo.Client = &auth.Client{
 			Client:     httpClient,
 			Credential: credFunc,
+		}
+	} else {
+		// Use timeout even without credentials
+		repo.Client = &http.Client{
+			Timeout: 60 * time.Second,
 		}
 	}
 

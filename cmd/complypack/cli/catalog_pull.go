@@ -86,18 +86,25 @@ func (o *catalogPullOptions) run(ctx context.Context) error {
 	// Extract tag from reference
 	tag := registry.ParseTag(o.ref)
 
-	// Copy from remote to memory store
+	// Resolve manifest descriptor to check size before downloading
 	// Use %q to sanitize reference output (prevents ANSI escape sequences)
-	fmt.Fprintf(os.Stderr, "Pulling %q...\n", o.ref)
-	store := memory.New()
-	desc, err := oras.Copy(ctx, repo, tag, store, tag, oras.DefaultCopyOptions)
+	fmt.Fprintf(os.Stderr, "Resolving %q...\n", o.ref)
+	manifestDesc, err := repo.Resolve(ctx, tag)
 	if err != nil {
-		return fmt.Errorf("failed to pull from registry: %w", err)
+		return fmt.Errorf("failed to resolve reference: %w", err)
 	}
 
-	// Check artifact size to prevent memory exhaustion
-	if err := validateArtifactSize(desc); err != nil {
+	// Check manifest size to prevent memory exhaustion before downloading
+	if err := validateArtifactSize(manifestDesc); err != nil {
 		return err
+	}
+
+	// Copy from remote to memory store
+	fmt.Fprintf(os.Stderr, "Pulling artifact...\n")
+	store := memory.New()
+	_, err = oras.Copy(ctx, repo, tag, store, tag, oras.DefaultCopyOptions)
+	if err != nil {
+		return fmt.Errorf("failed to pull from registry: %w", err)
 	}
 
 	// Unpack the Gemara bundle
@@ -130,7 +137,7 @@ func (o *catalogPullOptions) run(ctx context.Context) error {
 		defer f.Close() // Best-effort close on early return
 		outputFile = f
 		writer = f
-		fmt.Fprintf(os.Stderr, "Writing catalog to %s\n", o.output)
+		fmt.Fprintf(os.Stderr, "Writing catalog to %q\n", o.output)
 	}
 
 	if _, err := writer.Write(catalogData); err != nil {
