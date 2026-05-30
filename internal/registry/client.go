@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote"
@@ -34,8 +35,12 @@ func NewRepository(ref string, credFunc auth.CredentialFunc, plainHTTP bool) (*r
 
 	repo.PlainHTTP = plainHTTP
 	if credFunc != nil {
+		// Use custom HTTP client with timeout to prevent hanging on unresponsive registries
+		httpClient := &http.Client{
+			Timeout: 60 * time.Second,
+		}
 		repo.Client = &auth.Client{
-			Client:     http.DefaultClient,
+			Client:     httpClient,
 			Credential: credFunc,
 		}
 	}

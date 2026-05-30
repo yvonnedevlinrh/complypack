@@ -6,9 +6,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/complytime/complypack/internal/registry"
+	"github.com/complytime/complypack/pkg/complypack"
 	"github.com/gemaraproj/go-gemara/bundle"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content/memory"
@@ -60,6 +64,13 @@ func (o *catalogPullOptions) run(ctx context.Context) error {
 		return fmt.Errorf("reference cannot be empty")
 	}
 
+	// Validate output path if provided
+	if o.output != "" {
+		if err := validateOutputPath(o.output); err != nil {
+			return err
+		}
+	}
+
 	// Get Docker credentials
 	credFunc, err := registry.NewCredentialFunc()
 	if err != nil {
@@ -76,11 +87,17 @@ func (o *catalogPullOptions) run(ctx context.Context) error {
 	tag := registry.ParseTag(o.ref)
 
 	// Copy from remote to memory store
-	fmt.Fprintf(os.Stderr, "Pulling %s...\n", o.ref)
+	// Use %q to sanitize reference output (prevents ANSI escape sequences)
+	fmt.Fprintf(os.Stderr, "Pulling %q...\n", o.ref)
 	store := memory.New()
-	_, err = oras.Copy(ctx, repo, tag, store, tag, oras.DefaultCopyOptions)
+	desc, err := oras.Copy(ctx, repo, tag, store, tag, oras.DefaultCopyOptions)
 	if err != nil {
 		return fmt.Errorf("failed to pull from registry: %w", err)
+	}
+
+	// Check artifact size to prevent memory exhaustion
+	if err := validateArtifactSize(desc); err != nil {
+		return err
 	}
 
 	// Unpack the Gemara bundle
@@ -102,12 +119,16 @@ func (o *catalogPullOptions) run(ctx context.Context) error {
 
 	// Write catalog to output
 	writer := os.Stdout
+	var outputFile *os.File
 	if o.output != "" {
-		f, err := os.Create(o.output)
+		// Use os.OpenFile with explicit permissions and flags
+		// O_TRUNC: truncate if exists, O_CREATE: create if not exists, O_WRONLY: write-only
+		f, err := os.OpenFile(o.output, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 		if err != nil {
 			return fmt.Errorf("failed to create output file: %w", err)
 		}
-		defer f.Close()
+		defer f.Close() // Best-effort close on early return
+		outputFile = f
 		writer = f
 		fmt.Fprintf(os.Stderr, "Writing catalog to %s\n", o.output)
 	}
@@ -116,9 +137,50 @@ func (o *catalogPullOptions) run(ctx context.Context) error {
 		return fmt.Errorf("failed to write catalog: %w", err)
 	}
 
-	if o.output != "" {
+	// Explicitly check close error for output file to catch write errors
+	// on buffered/networked filesystems
+	if outputFile != nil {
+		if err := outputFile.Close(); err != nil {
+			return fmt.Errorf("failed to close output file: %w", err)
+		}
 		fmt.Fprintf(os.Stderr, "Successfully pulled catalog\n")
 	}
 
+	return nil
+}
+
+// validateOutputPath validates the output file path for security.
+// Prevents path traversal and ensures safe file creation.
+func validateOutputPath(path string) error {
+	// Clean the path to normalize it
+	cleanPath := filepath.Clean(path)
+
+	// Reject absolute paths for safety
+	if filepath.IsAbs(cleanPath) {
+		return fmt.Errorf("absolute paths not allowed in --output flag: %q", path)
+	}
+
+	// Check for path traversal patterns
+	if strings.Contains(cleanPath, "..") {
+		return fmt.Errorf("path traversal not allowed in --output flag: %q", path)
+	}
+
+	// Check if path is a symlink (would follow symlink on write)
+	if info, err := os.Lstat(cleanPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("output path is a symlink, refusing to write: %q", path)
+		}
+	}
+
+	return nil
+}
+
+// validateArtifactSize checks if the artifact size is within acceptable limits.
+// Uses the same limit as complypack.MaxContentSize to prevent memory exhaustion.
+func validateArtifactSize(desc ocispec.Descriptor) error {
+	if desc.Size > complypack.MaxContentSize {
+		return fmt.Errorf("artifact size %d bytes exceeds maximum allowed size of %d bytes",
+			desc.Size, complypack.MaxContentSize)
+	}
 	return nil
 }

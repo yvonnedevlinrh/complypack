@@ -3,10 +3,17 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/complytime/complypack/pkg/complypack"
 )
 
 func TestCatalogPullCmd(t *testing.T) {
@@ -113,4 +120,118 @@ func findCommand(parent interface {
 		}
 	}
 	return nil
+}
+
+func TestValidateOutputPath(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		wantError bool
+	}{
+		{
+			name:      "valid relative path",
+			path:      "output.yaml",
+			wantError: false,
+		},
+		{
+			name:      "valid nested relative path",
+			path:      "subdir/output.yaml",
+			wantError: false,
+		},
+		{
+			name:      "absolute path rejected",
+			path:      "/tmp/output.yaml",
+			wantError: true,
+		},
+		{
+			name:      "path traversal with .. rejected",
+			path:      "../output.yaml",
+			wantError: true,
+		},
+		{
+			name:      "path traversal nested rejected",
+			path:      "subdir/../../output.yaml",
+			wantError: true,
+		},
+		{
+			name:      "current directory explicit",
+			path:      "./output.yaml",
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateOutputPath(tt.path)
+			if tt.wantError {
+				assert.Error(t, err, "expected error for path %q", tt.path)
+			} else {
+				assert.NoError(t, err, "expected no error for path %q", tt.path)
+			}
+		})
+	}
+}
+
+func TestValidateOutputPathSymlink(t *testing.T) {
+	// Create a temporary directory for testing
+	tmpDir := t.TempDir()
+
+	// Create a regular file
+	regularFile := filepath.Join(tmpDir, "regular.txt")
+	err := os.WriteFile(regularFile, []byte("test"), 0o644)
+	require.NoError(t, err)
+
+	// Create a symlink
+	symlinkPath := filepath.Join(tmpDir, "symlink.txt")
+	err = os.Symlink(regularFile, symlinkPath)
+	require.NoError(t, err)
+
+	// Test that symlink is rejected
+	err = validateOutputPath(symlinkPath)
+	assert.Error(t, err, "expected error for symlink path")
+	assert.Contains(t, err.Error(), "symlink", "error should mention symlink")
+}
+
+func TestValidateArtifactSize(t *testing.T) {
+	tests := []struct {
+		name      string
+		size      int64
+		wantError bool
+	}{
+		{
+			name:      "size within limit",
+			size:      1024,
+			wantError: false,
+		},
+		{
+			name:      "size at limit",
+			size:      complypack.MaxContentSize,
+			wantError: false,
+		},
+		{
+			name:      "size exceeds limit",
+			size:      complypack.MaxContentSize + 1,
+			wantError: true,
+		},
+		{
+			name:      "zero size allowed",
+			size:      0,
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desc := ocispec.Descriptor{
+				Size: tt.size,
+			}
+			err := validateArtifactSize(desc)
+			if tt.wantError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "exceeds maximum")
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }
