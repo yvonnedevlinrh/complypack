@@ -178,7 +178,7 @@ func TestValidateOutputPathSymlink(t *testing.T) {
 
 	// Create a regular file
 	regularFile := filepath.Join(tmpDir, "regular.txt")
-	err := os.WriteFile(regularFile, []byte("test"), 0o644)
+	err := os.WriteFile(regularFile, []byte("test"), 0o600)
 	require.NoError(t, err)
 
 	// Create a symlink
