@@ -53,12 +53,12 @@ func LoadAndResolve(
 			loadErrs = append(loadErrs, fmt.Errorf("source %s: %w", name, err))
 			continue
 		}
-		for id := range src.Policies {
-			policySources[id] = entry.Source
-		}
 		if err := loaded.Merge(src); err != nil {
 			loadErrs = append(loadErrs, fmt.Errorf("source %s: %w", name, err))
 			continue
+		}
+		for id := range src.Policies {
+			policySources[id] = entry.Source
 		}
 	}
 	// Report all load/merge failures at once so every unreachable or
